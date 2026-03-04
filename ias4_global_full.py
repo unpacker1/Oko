@@ -1,5 +1,5 @@
 # ias4_global_full.py
-import requests, datetime, logging, time, math
+import requests, datetime, logging, time, math, random
 from flask import Flask, render_template_string, jsonify
 from flask_socketio import SocketIO
 from threading import Thread
@@ -7,7 +7,7 @@ from sgp4.api import Satrec
 import pytz
 
 # -------------------------------
-# CONFIG – Global Ayarlar
+# CONFIG
 # -------------------------------
 OPENWEATHER_API_KEY = "YOUR_OPENWEATHER_API_KEY"
 AIS_HUB_API_KEY = "YOUR_AIS_HUB_API_KEY"
@@ -24,7 +24,7 @@ WEATHER_LOCATIONS = [
     {"name": "Sao Paulo", "lat": -23.5505, "lon": -46.6333}
 ]
 
-AIS_BOUNDING_BOX = "-90,-180,90,180"  # Dünya çapı
+AIS_BOUNDING_BOX = "-90,-180,90,180"
 ROUTE_HISTORY_LIMIT = 30
 SATELLITE_ROUTE_FORECAST_MINUTES = 60
 
@@ -114,7 +114,7 @@ def fetch_opensky_data():
 
 def fetch_satellite_tle_data():
     global space_track_session
-    if not space_track_session: login_space_track(SPACE_TRACK_USERNAME, SPACE_TRACK_PASSWORD)
+    if not space_track_session: login_space_track(SPACE_TRACK_USERNAME,SPACE_TRACK_PASSWORD)
     if not space_track_session: return []
     url="https://www.space-track.org/basicspacedata/query/class/tle_latest/ORDINAL/1/EPOCH/%3Enow-30/orderby/NORAD_CAT_ID/limit/50/format/json"
     try:
@@ -130,7 +130,7 @@ def fetch_satellite_tle_data():
 def process_routes(entity_list,key,route_dict,extract_pos):
     current_ids=set(); processed=[]
     for e in entity_list:
-        eid=e.get(key); 
+        eid=e.get(key)
         if not eid: continue
         current_ids.add(eid)
         pos=extract_pos(e)
@@ -184,7 +184,7 @@ index_html="""
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>IAS4 Global 3D</title>
+<title>IAS4 Natural 3D</title>
 <script src="https://cesium.com/downloads/cesiumjs/releases/1.106/Build/Cesium/Cesium.js"></script>
 <link href="https://cesium.com/downloads/cesiumjs/releases/1.106/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
 <style>html,body,#cesiumContainer{width:100%;height:100%;margin:0;padding:0;}</style>
@@ -197,17 +197,11 @@ var viewer = new Cesium.Viewer('cesiumContainer',{terrainProvider:Cesium.createW
 var flightEntities={}, shipEntities={}, satEntities={};
 var socket=io();
 socket.on('live_data',function(data){
-    // Flights
-    for(var k in flightEntities){viewer.entities.remove(flightEntities[k]);}
-    flightEntities={};
+    for(var k in flightEntities){viewer.entities.remove(flightEntities[k]);} flightEntities={};
     (data.flights||[]).forEach(function(f){flightEntities[f.icao24]=viewer.entities.add({position:Cesium.Cartesian3.fromDegrees(f.lon,f.lat,f.alt),point:{pixelSize:5,color:Cesium.Color.RED},label:{text:f.callsign,scale:0.5}});});
-    // Ships
-    for(var k in shipEntities){viewer.entities.remove(shipEntities[k]);}
-    shipEntities={};
+    for(var k in shipEntities){viewer.entities.remove(shipEntities[k]);} shipEntities={};
     (data.ships||[]).forEach(function(s){shipEntities[s.mmsi]=viewer.entities.add({position:Cesium.Cartesian3.fromDegrees(s.lon,s.lat,0),point:{pixelSize:5,color:Cesium.Color.BLUE},label:{text:s.name,scale:0.5}});});
-    // Satellites
-    for(var k in satEntities){viewer.entities.remove(satEntities[k]);}
-    satEntities={};
+    for(var k in satEntities){viewer.entities.remove(satEntities[k]);} satEntities={};
     (data.satellites||[]).forEach(function(s){satEntities[s.norad_id]=viewer.entities.add({position:Cesium.Cartesian3.fromDegrees(s.lon,s.lat,s.alt),point:{pixelSize:3,color:Cesium.Color.GREEN},label:{text:s.name,scale:0.5}});});
 });
 </script>
@@ -225,4 +219,6 @@ def api_global(): return jsonify(global_data)
 # -------------------------------
 if __name__=="__main__":
     Thread(target=live_loop,daemon=True).start()
-    socketio.run(app,host="0.0.0.0",port=8090,allow_unsafe_werkzeug=True)
+    random_port=random.randint(2000,9000)
+    print(f"Server başlatılıyor, IP: 0.0.0.0, Port: {random_port}")
+    socketio.run(app,host="0.0.0.0",port=random_port,allow_unsafe_werkzeug=True)
