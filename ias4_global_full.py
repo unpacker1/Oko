@@ -1,208 +1,131 @@
 # ias4_global_full.py
-import requests, datetime, math, logging, time, random
+import random, time, math, datetime, logging
+from threading import Thread
 from flask import Flask, render_template_string, jsonify
 from flask_socketio import SocketIO
-from threading import Thread
-from sgp4.api import Satrec, WGS72
-
-# -------------------------------
-# CONFIG
-# -------------------------------
-OPENWEATHER_API_KEY = "YOUR_OPENWEATHER_API_KEY"
-AIS_HUB_API_KEY = "YOUR_AIS_HUB_API_KEY"
-SPACE_TRACK_USERNAME = "YOUR_SPACE_TRACK_USERNAME"
-SPACE_TRACK_PASSWORD = "YOUR_SPACE_TRACK_PASSWORD"
-
-# Demo lokasyonlar
-WEATHER_LOCATIONS = [
-    {"name": "Istanbul", "lat": 41.0082, "lon": 28.9784},
-    {"name": "London", "lat": 51.5074, "lon": -0.1278},
-    {"name": "Tokyo", "lat": 35.6762, "lon": 139.6503},
-    {"name": "Sydney", "lat": -33.8688, "lon": 151.2093},
-]
-
-AIS_BOUNDING_BOX = "25,30,45,45"  # min_lat,min_lon,max_lat,max_lon
-
-ROUTE_HISTORY_LIMIT = 30
-SATELLITE_ROUTE_FORECAST_MINUTES = 30
+import socket
 
 # -------------------------------
 # LOGGING
 # -------------------------------
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
-def log_event(msg):
+def log(msg):
     logging.info(msg)
 
 # -------------------------------
-# GLOBAL DATA
+# GLOBAL DATA STORE
 # -------------------------------
 global_data = {
     "flights": [],
     "ships": [],
     "satellites": [],
-    "weather": [],
     "flight_routes": {},
     "ship_routes": {},
     "satellite_routes": {},
     "last_update": None
 }
 
-space_track_session = None
+# -------------------------------
+# CONFIG
+# -------------------------------
+ROUTE_HISTORY_LIMIT = 30
+SATELLITE_ROUTE_FORECAST_MINUTES = 60
 
 # -------------------------------
-# API FETCH FUNCTIONS
+# DEMO DATA GENERATOR
 # -------------------------------
-def fetch_weather_data():
-    reports = []
-    if OPENWEATHER_API_KEY == "YOUR_OPENWEATHER_API_KEY":
-        return reports
-    for loc in WEATHER_LOCATIONS:
-        try:
-            r = requests.get(
-                "http://api.openweathermap.org/data/2.5/weather",
-                params={"lat": loc["lat"], "lon": loc["lon"], "appid": OPENWEATHER_API_KEY, "units": "metric"},
-                timeout=5
-            )
-            if r.status_code == 200:
-                data = r.json()
-                reports.append({
-                    "name": loc["name"],
-                    "latitude": loc["lat"],
-                    "longitude": loc["lon"],
-                    "temperature": data["main"]["temp"],
-                    "description": data["weather"][0]["description"]
-                })
-        except:
-            continue
-    return reports
+def generate_demo_flights(num=20):
+    flights = []
+    for i in range(num):
+        icao24 = f"FL{i:04d}"
+        lat = random.uniform(-60, 60)
+        lon = random.uniform(-180, 180)
+        alt = random.uniform(8000, 12000)
+        vel = random.uniform(200, 300)
+        heading = random.uniform(0, 360)
+        flights.append({
+            "icao24": icao24,
+            "callsign": f"DEMO{i}",
+            "longitude": lon,
+            "latitude": lat,
+            "altitude": alt,
+            "velocity": vel,
+            "true_track": heading
+        })
+    return flights
 
-def fetch_ais_data():
-    if AIS_HUB_API_KEY == "YOUR_AIS_HUB_API_KEY":
-        return []
-    min_lat, min_lon, max_lat, max_lon = map(float, AIS_BOUNDING_BOX.split(','))
-    try:
-        r = requests.get(f"http://data.aishub.net/ws.php?box={min_lon},{min_lat},{max_lon},{max_lat}&apiKey={AIS_HUB_API_KEY}&output=json", timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            ships = []
-            for s in (data.get('ships', []) if isinstance(data, dict) else data):
-                try:
-                    lat, lon = float(s.get('LAT',0)), float(s.get('LON',0))
-                    if lat == 0 or lon == 0: continue
-                    ships.append({
-                        "mmsi": s.get("MMSI"),
-                        "name": s.get("NAME", f"Ship-{s.get('MMSI')}"),
-                        "latitude": lat,
-                        "longitude": lon,
-                        "speed": float(s.get("SOG",0)),
-                        "course": float(s.get("COG",0))
-                    })
-                except: continue
-            return ships
-    except: return []
-    return []
+def generate_demo_ships(num=15):
+    ships = []
+    for i in range(num):
+        mmsi = f"SH{i:04d}"
+        lat = random.uniform(-60, 60)
+        lon = random.uniform(-180, 180)
+        cog = random.uniform(0, 360)
+        sog = random.uniform(5, 30)
+        ships.append({
+            "mmsi": mmsi,
+            "name": f"DEMO_SHIP{i}",
+            "longitude": lon,
+            "latitude": lat,
+            "course": cog,
+            "speed": sog
+        })
+    return ships
 
-def fetch_opensky_data():
-    try:
-        r = requests.get("https://opensky-network.org/api/states/all", timeout=10)
-        if r.status_code == 200:
-            flights = []
-            states = r.json().get("states",[])
-            for f in states[:20]:  # sadece ilk 20 uçak demo
-                flights.append({
-                    "icao24": f[0],
-                    "callsign": f[1].strip() if f[1] else "",
-                    "longitude": f[5],
-                    "latitude": f[6],
-                    "altitude": f[7] or 10000,
-                    "velocity": f[9] or 0
-                })
-            return flights
-    except: pass
-    return []
-
-def login_space_track():
-    global space_track_session
-    if SPACE_TRACK_USERNAME == "YOUR_SPACE_TRACK_USERNAME": return None
-    try:
-        s = requests.Session()
-        s.post("https://www.space-track.org/ajaxauth/login", data={'identity':SPACE_TRACK_USERNAME,'password':SPACE_TRACK_PASSWORD}, timeout=10)
-        space_track_session = s
-        return s
-    except: return None
-
-def fetch_satellite_tle_data():
-    if not space_track_session: login_space_track()
-    if not space_track_session: return []
-    try:
-        r = space_track_session.get("https://www.space-track.org/basicspacedata/query/class/tle_latest/ORDINAL/1/format/json", timeout=10)
-        data = r.json()
-        sats = []
-        for tle in data:
-            sats.append({
-                "norad_id": tle.get("NORAD_CAT_ID"),
-                "name": tle.get("OBJECT_NAME"),
-                "TLE_LINE1": tle.get("TLE_LINE1"),
-                "TLE_LINE2": tle.get("TLE_LINE2")
-            })
-        return sats
-    except: return []
-
-def get_satellite_position_from_tle(line1,line2,time_obj):
-    try:
-        sat = Satrec.twoline2rv(line1,line2)
-        jd = time_obj.timetuple().tm_yday + time_obj.hour/24
-        e,r,v = sat.sgp4(time_obj.year,jd)
-        if e==0:
-            lon = math.degrees(r[0]%360)
-            lat = math.degrees(r[1]%90)
-            alt = r[2]
-            return [lon,lat,alt]
-    except: return None
-    return None
+def generate_demo_satellites(num=5):
+    sats = []
+    for i in range(num):
+        norad_id = f"SAT{i:03d}"
+        lat = random.uniform(-60, 60)
+        lon = random.uniform(-180, 180)
+        alt = random.uniform(400, 800)
+        sats.append({
+            "norad_id": norad_id,
+            "name": f"DEMO_SAT{i}",
+            "latitude": lat,
+            "longitude": lon,
+            "altitude": alt*1000  # metre
+        })
+    return sats
 
 # -------------------------------
-# DATA PROCESSING
+# ROUTE UPDATES
 # -------------------------------
-def update_routes(entity_list, key, route_dict, pos_func):
+def update_routes(entity_list, id_key, route_dict):
     current_ids = set()
-    for e in entity_list:
-        eid = e.get(key)
-        if not eid: continue
-        current_ids.add(eid)
-        pos = pos_func(e)
-        if not pos: continue
-        if eid not in route_dict: route_dict[eid] = []
-        route_dict[eid].append(pos)
-        if len(route_dict[eid])>ROUTE_HISTORY_LIMIT: route_dict[eid].pop(0)
-    # eski rotaları temizle
-    for eid in list(route_dict.keys()):
-        if eid not in current_ids: del route_dict[eid]
+    for ent in entity_list:
+        ent_id = ent[id_key]
+        current_ids.add(ent_id)
+        pos = [ent['longitude'], ent['latitude'], ent.get('altitude', 0)]
+        if ent_id not in route_dict:
+            route_dict[ent_id] = []
+        route_dict[ent_id].append(pos)
+        if len(route_dict[ent_id]) > ROUTE_HISTORY_LIMIT:
+            route_dict[ent_id].pop(0)
+    # Remove missing
+    to_remove = [eid for eid in route_dict if eid not in current_ids]
+    for eid in to_remove:
+        del route_dict[eid]
     return entity_list
-
-def process_satellites(tle_data):
-    processed = []
-    now = datetime.datetime.utcnow()
-    for t in tle_data[:5]: # demo sadece 5 uydu
-        pos = get_satellite_position_from_tle(t["TLE_LINE1"],t["TLE_LINE2"],now)
-        if pos:
-            processed.append({"norad_id":t["norad_id"],"name":t["name"],"longitude":pos[0],"latitude":pos[1],"altitude":pos[2]})
-    return processed
 
 # -------------------------------
 # LIVE DATA LOOP
 # -------------------------------
 def live_data_loop():
     while True:
-        global_data["weather"] = fetch_weather_data()
-        flights = fetch_opensky_data()
-        global_data["flights"] = update_routes(flights,"icao24",global_data["flight_routes"],lambda f:[f["longitude"],f["latitude"],f["altitude"]])
-        ships = fetch_ais_data()
-        global_data["ships"] = update_routes(ships,"mmsi",global_data["ship_routes"],lambda s:[s["longitude"],s["latitude"],0])
-        tles = fetch_satellite_tle_data()
-        global_data["satellites"] = process_satellites(tles)
-        global_data["last_update"] = datetime.datetime.utcnow().isoformat()
+        # Uçak
+        flights = generate_demo_flights()
+        global_data['flights'] = update_routes(flights, 'icao24', global_data['flight_routes'])
+        # Gemi
+        ships = generate_demo_ships()
+        global_data['ships'] = update_routes(ships, 'mmsi', global_data['ship_routes'])
+        # Uydu
+        sats = generate_demo_satellites()
+        global_data['satellites'] = update_routes(sats, 'norad_id', global_data['satellite_routes'])
+        global_data['last_update'] = datetime.datetime.utcnow().isoformat()
+        socketio.emit('live_data', global_data)
         time.sleep(10)
 
 # -------------------------------
@@ -211,41 +134,77 @@ def live_data_loop():
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-INDEX_HTML = """
+# -------------------------------
+# INDEX HTML
+# -------------------------------
+index_html = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>IAS4 Global</title>
-    <script src="https://cesium.com/downloads/cesiumjs/releases/1.106/Build/Cesium/Cesium.js"></script>
-    <link href="https://cesium.com/downloads/cesiumjs/releases/1.106/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
-    <style>body,html{margin:0;height:100%;}#cesiumContainer{width:100%;height:100%;}</style>
+<title>IAS4 Demo Global Command Center</title>
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.106/Build/Cesium/Cesium.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.1/socket.io.min.js"></script>
+<style>
+html,body,#cesiumContainer{width:100%;height:100%;margin:0;padding:0;overflow:hidden;}
+#controlPanel{position:absolute;top:10px;left:10px;background:rgba(255,255,255,0.8);padding:10px;z-index:10;}
+</style>
 </head>
 <body>
 <div id="cesiumContainer"></div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<div id="controlPanel">
+<input type="checkbox" id="flights_cb" checked> Uçaklar<br>
+<input type="checkbox" id="ships_cb" checked> Gemiler<br>
+<input type="checkbox" id="sats_cb" checked> Uydular
+</div>
 <script>
-var viewer = new Cesium.Viewer('cesiumContainer',{
-    imageryProvider: new Cesium.IonImageryProvider({assetId:2}), // Natural Earth
-    baseLayerPicker:false,
-    timeline:false,
-    animation:false
-});
-var flightLayer = viewer.entities.add(new Cesium.Entity());
-var shipLayer = viewer.entities.add(new Cesium.Entity());
-var satelliteLayer = viewer.entities.add(new Cesium.Entity());
+var viewer = new Cesium.Viewer('cesiumContainer', {terrainProvider: Cesium.createWorldTerrain()});
+var flightEntities = {}, shipEntities = {}, satEntities = {};
 
 var socket = io();
+
 socket.on('live_data', function(data){
-    viewer.entities.removeAll();
-    if(data.flights) data.flights.forEach(function(f){
-        viewer.entities.add({name:f.callsign,position:Cesium.Cartesian3.fromDegrees(f.longitude,f.latitude,f.altitude/1000),point:{pixelSize:5,color:Cesium.Color.RED}});
-    });
-    if(data.ships) data.ships.forEach(function(s){
-        viewer.entities.add({name:s.name,position:Cesium.Cartesian3.fromDegrees(s.longitude,s.latitude,0),point:{pixelSize:5,color:Cesium.Color.BLUE}});
-    });
-    if(data.satellites) data.satellites.forEach(function(s){
-        viewer.entities.add({name:s.name,position:Cesium.Cartesian3.fromDegrees(s.longitude,s.latitude,s.altitude/1000),point:{pixelSize:5,color:Cesium.Color.GREEN}});
-    });
+    // Uçaklar
+    if(document.getElementById('flights_cb').checked){
+        data.flights.forEach(f=>{
+            if(!flightEntities[f.icao24]){
+                flightEntities[f.icao24] = viewer.entities.add({
+                    name: f.callsign,
+                    position: Cesium.Cartesian3.fromDegrees(f.longitude,f.latitude,f.altitude),
+                    point: {pixelSize:10,color:Cesium.Color.RED}
+                });
+            } else {
+                flightEntities[f.icao24].position = Cesium.Cartesian3.fromDegrees(f.longitude,f.latitude,f.altitude);
+            }
+        });
+    }
+    // Gemiler
+    if(document.getElementById('ships_cb').checked){
+        data.ships.forEach(s=>{
+            if(!shipEntities[s.mmsi]){
+                shipEntities[s.mmsi] = viewer.entities.add({
+                    name: s.name,
+                    position: Cesium.Cartesian3.fromDegrees(s.longitude,s.latitude,0),
+                    point: {pixelSize:10,color:Cesium.Color.BLUE}
+                });
+            } else {
+                shipEntities[s.mmsi].position = Cesium.Cartesian3.fromDegrees(s.longitude,s.latitude,0);
+            }
+        });
+    }
+    // Uydular
+    if(document.getElementById('sats_cb').checked){
+        data.satellites.forEach(s=>{
+            if(!satEntities[s.norad_id]){
+                satEntities[s.norad_id] = viewer.entities.add({
+                    name: s.name,
+                    position: Cesium.Cartesian3.fromDegrees(s.longitude,s.latitude,s.altitude),
+                    point: {pixelSize:10,color:Cesium.Color.GREEN}
+                });
+            } else {
+                satEntities[s.norad_id].position = Cesium.Cartesian3.fromDegrees(s.longitude,s.latitude,s.altitude);
+            }
+        });
+    }
 });
 </script>
 </body>
@@ -254,17 +213,25 @@ socket.on('live_data', function(data){
 
 @app.route("/")
 def index():
-    return render_template_string(INDEX_HTML)
+    return render_template_string(index_html)
 
 @app.route("/api/global_data")
 def api_data():
     return jsonify(global_data)
 
 # -------------------------------
+# RANDOM PORT HELPER
+# -------------------------------
+def get_random_port():
+    return random.randint(8000, 8999)
+
+# -------------------------------
 # MAIN
 # -------------------------------
 if __name__ == "__main__":
-    Thread(target=live_data_loop,daemon=True).start()
-    port = random.randint(8000,8999)
-    log_event(f"Flask + SocketIO başlatılıyor port {port}")
+    data_thread = Thread(target=live_data_loop, daemon=True)
+    data_thread.start()
+
+    port = get_random_port()
+    log(f"Server starting on http://0.0.0.0:{port}")
     socketio.run(app, host="0.0.0.0", port=port)
