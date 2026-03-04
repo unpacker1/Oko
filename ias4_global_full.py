@@ -3,15 +3,16 @@ import requests, datetime, logging, time, math
 from flask import Flask, render_template_string, jsonify
 from flask_socketio import SocketIO
 from threading import Thread
-from sgp4.api import Satrec, WGS72
+from sgp4.api import Satrec
+import pytz
 
 # -------------------------------
 # CONFIG – Global Ayarlar
 # -------------------------------
 OPENWEATHER_API_KEY = "YOUR_OPENWEATHER_API_KEY"
+AIS_HUB_API_KEY = "YOUR_AIS_HUB_API_KEY"
 SPACE_TRACK_USERNAME = "YOUR_SPACE_TRACK_USERNAME"
 SPACE_TRACK_PASSWORD = "YOUR_SPACE_TRACK_PASSWORD"
-AIS_HUB_API_KEY = "YOUR_AIS_HUB_API_KEY"
 
 WEATHER_LOCATIONS = [
     {"name": "New York", "lat": 40.7128, "lon": -74.0060},
@@ -23,8 +24,7 @@ WEATHER_LOCATIONS = [
     {"name": "Sao Paulo", "lat": -23.5505, "lon": -46.6333}
 ]
 
-AIS_BOUNDING_BOX = "-90,-180,90,180"  # Dünya çapında
-
+AIS_BOUNDING_BOX = "-90,-180,90,180"  # Dünya çapı
 ROUTE_HISTORY_LIMIT = 30
 SATELLITE_ROUTE_FORECAST_MINUTES = 60
 
@@ -35,48 +35,38 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 def log_event(msg): logging.info(msg)
 
 # -------------------------------
-# GLOBAL DATA STORE
+# GLOBAL DATA
 # -------------------------------
 global_data = {
-    "flights": [],
-    "ships": [],
-    "satellites": [],
-    "weather": [],
-    "flight_routes": {},
-    "ship_routes": {},
-    "satellite_routes": {},
-    "last_update": None
+    "flights": [], "ships": [], "satellites": [], "weather": [],
+    "flight_routes": {}, "ship_routes": {}, "satellite_routes": {}, "last_update": None
 }
 
 space_track_session = None
 
 # -------------------------------
-# SPACE TRACK LOGIN
+# SPACE-TRACK LOGIN
 # -------------------------------
 def login_space_track(username, password):
     global space_track_session
     if not username or not password or username=="YOUR_SPACE_TRACK_USERNAME":
-        log_event("Space-Track.org login atlandı (kullanıcı adı/şifre yok).")
-        return None
+        log_event("Space-Track login atlandı")
+        return
     session = requests.Session()
     try:
         r = session.post("https://www.space-track.org/ajaxauth/login",
                          data={'identity':username,'password':password}, timeout=10)
         if r.status_code==200:
-            space_track_session=session
-            log_event("Space-Track.org login başarılı.")
-            return session
+            space_track_session = session
+            log_event("Space-Track login başarılı")
     except: pass
-    return None
 
 # -------------------------------
-# DATA COLLECTION
+# DATA FETCH
 # -------------------------------
 def fetch_weather_data():
     reports=[]
-    if not OPENWEATHER_API_KEY or OPENWEATHER_API_KEY=="YOUR_OPENWEATHER_API_KEY":
-        log_event("OpenWeatherMap API anahtarı yok.")
-        return reports
+    if not OPENWEATHER_API_KEY or OPENWEATHER_API_KEY=="YOUR_OPENWEATHER_API_KEY": return reports
     for loc in WEATHER_LOCATIONS:
         try:
             r=requests.get("http://api.openweathermap.org/data/2.5/weather",
@@ -91,15 +81,14 @@ def fetch_weather_data():
 
 def fetch_ais_data():
     ships=[]
-    if not AIS_HUB_API_KEY or AIS_HUB_API_KEY=="YOUR_AIS_HUB_API_KEY":
-        log_event("AIS Hub API anahtarı yok.")
-        return ships
-    min_lat,min_lon,max_lat,max_lon=map(float,AIS_BOUNDING_BOX.split(','))
+    if not AIS_HUB_API_KEY or AIS_HUB_API_KEY=="YOUR_AIS_HUB_API_KEY": return ships
+    min_lat,min_lon,max_lat,max_lon = map(float, AIS_BOUNDING_BOX.split(','))
     box=f"{min_lon},{min_lat},{max_lon},{max_lat}"
     try:
-        r=requests.get("http://data.aishub.net/ws.php",params={"apikey":AIS_HUB_API_KEY,"box":box,"output":"json"},timeout=15)
-        data=r.json()
-        raw_list=data if isinstance(data,list) else data.get("ships",[])
+        r = requests.get("http://data.aishub.net/ws.php",
+                         params={"apikey":AIS_HUB_API_KEY,"box":box,"output":"json"}, timeout=15)
+        data = r.json()
+        raw_list = data if isinstance(data,list) else data.get("ships",[])
         for s in raw_list:
             try:
                 lat=float(s.get("LAT",0)); lon=float(s.get("LON",0))
@@ -125,9 +114,8 @@ def fetch_opensky_data():
 
 def fetch_satellite_tle_data():
     global space_track_session
-    if not space_track_session:
-        login_space_track(SPACE_TRACK_USERNAME, SPACE_TRACK_PASSWORD)
-        if not space_track_session: return []
+    if not space_track_session: login_space_track(SPACE_TRACK_USERNAME, SPACE_TRACK_PASSWORD)
+    if not space_track_session: return []
     url="https://www.space-track.org/basicspacedata/query/class/tle_latest/ORDINAL/1/EPOCH/%3Enow-30/orderby/NORAD_CAT_ID/limit/50/format/json"
     try:
         r=space_track_session.get(url,timeout=15)
@@ -137,7 +125,7 @@ def fetch_satellite_tle_data():
     except: return []
 
 # -------------------------------
-# HELPER FUNCTIONS
+# ROUTE PROCESSING
 # -------------------------------
 def process_routes(entity_list,key,route_dict,extract_pos):
     current_ids=set(); processed=[]
@@ -145,7 +133,7 @@ def process_routes(entity_list,key,route_dict,extract_pos):
         eid=e.get(key); 
         if not eid: continue
         current_ids.add(eid)
-        pos=extract_pos(e); 
+        pos=extract_pos(e)
         if pos is None: continue
         processed.append(e)
         if eid not in route_dict: route_dict[eid]=[]
@@ -160,10 +148,8 @@ def get_sat_pos(tle1,tle2,time_obj):
         jd=time_obj.timetuple().tm_yday + (time_obj.hour+time_obj.minute/60+time_obj.second/3600)/24
         sat=Satrec.twoline2rv(tle1,tle2)
         e,r,v=sat.sgp4(time_obj.year,jd)
-        if e==0:
-            return [r[0],r[1],r[2]*1000]  # x,y,z metre
-    except: pass
-    return None
+        if e==0: return [r[0],r[1],r[2]*1000]
+    except: return None
 
 def process_satellites(tles,route_dict):
     processed=[]; current_ids=set(); now=datetime.datetime.utcnow()
@@ -176,17 +162,15 @@ def process_satellites(tles,route_dict):
     return processed
 
 # -------------------------------
-# LIVE DATA LOOP
+# LIVE LOOP
 # -------------------------------
 def live_loop():
     while True:
         global_data["weather"]=fetch_weather_data()
-        global_data["flights"]=process_routes(fetch_opensky_data(),"icao24",global_data["flight_routes"],
-                                               lambda f:[f["lon"],f["lat"],f["alt"]])
-        global_data["ships"]=process_routes(fetch_ais_data(),"mmsi",global_data["ship_routes"],
-                                            lambda s:[s["lon"],s["lat"],0])
+        global_data["flights"]=process_routes(fetch_opensky_data(),"icao24",global_data["flight_routes"], lambda f:[f["lon"],f["lat"],f["alt"]])
+        global_data["ships"]=process_routes(fetch_ais_data(),"mmsi",global_data["ship_routes"], lambda s:[s["lon"],s["lat"],0])
         global_data["satellites"]=process_satellites(fetch_satellite_tle_data(),global_data["satellite_routes"])
-        global_data["last_update"]=datetime.datetime.utcnow().isoformat()
+        global_data["last_update"]=datetime.datetime.now(pytz.UTC).isoformat()
         time.sleep(15)
 
 # -------------------------------
@@ -200,37 +184,31 @@ index_html="""
 <html>
 <head>
 <meta charset="utf-8"/>
-<title>IAS4 Global</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
-<style>html,body,#map{height:100%;margin:0;padding:0;}</style>
+<title>IAS4 Global 3D</title>
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.106/Build/Cesium/Cesium.js"></script>
+<link href="https://cesium.com/downloads/cesiumjs/releases/1.106/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<style>html,body,#cesiumContainer{width:100%;height:100%;margin:0;padding:0;}</style>
 </head>
 <body>
-<div id="map"></div>
+<div id="cesiumContainer"></div>
+<script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
 <script>
-var map=L.map('map').setView([0,0],2);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
-
-var flightLayer=L.layerGroup().addTo(map);
-var shipLayer=L.layerGroup().addTo(map);
-var satLayer=L.layerGroup().addTo(map);
-
+var viewer = new Cesium.Viewer('cesiumContainer',{terrainProvider:Cesium.createWorldTerrain()});
+var flightEntities={}, shipEntities={}, satEntities={};
 var socket=io();
 socket.on('live_data',function(data){
-    flightLayer.clearLayers();
-    shipLayer.clearLayers();
-    satLayer.clearLayers();
-
-    (data.flights||[]).forEach(function(f){
-        L.circleMarker([f.lat,f.lon],{radius:4,color:'red'}).bindPopup(f.callsign||f.icao24).addTo(flightLayer);
-    });
-    (data.ships||[]).forEach(function(s){
-        L.circleMarker([s.lat,s.lon],{radius:4,color:'blue'}).bindPopup(s.name).addTo(shipLayer);
-    });
-    (data.satellites||[]).forEach(function(sat){
-        L.circleMarker([sat.lat,s.lon],{radius:3,color:'green'}).bindPopup(sat.name).addTo(satLayer);
-    });
+    // Flights
+    for(var k in flightEntities){viewer.entities.remove(flightEntities[k]);}
+    flightEntities={};
+    (data.flights||[]).forEach(function(f){flightEntities[f.icao24]=viewer.entities.add({position:Cesium.Cartesian3.fromDegrees(f.lon,f.lat,f.alt),point:{pixelSize:5,color:Cesium.Color.RED},label:{text:f.callsign,scale:0.5}});});
+    // Ships
+    for(var k in shipEntities){viewer.entities.remove(shipEntities[k]);}
+    shipEntities={};
+    (data.ships||[]).forEach(function(s){shipEntities[s.mmsi]=viewer.entities.add({position:Cesium.Cartesian3.fromDegrees(s.lon,s.lat,0),point:{pixelSize:5,color:Cesium.Color.BLUE},label:{text:s.name,scale:0.5}});});
+    // Satellites
+    for(var k in satEntities){viewer.entities.remove(satEntities[k]);}
+    satEntities={};
+    (data.satellites||[]).forEach(function(s){satEntities[s.norad_id]=viewer.entities.add({position:Cesium.Cartesian3.fromDegrees(s.lon,s.lat,s.alt),point:{pixelSize:3,color:Cesium.Color.GREEN},label:{text:s.name,scale:0.5}});});
 });
 </script>
 </body>
@@ -247,4 +225,4 @@ def api_global(): return jsonify(global_data)
 # -------------------------------
 if __name__=="__main__":
     Thread(target=live_loop,daemon=True).start()
-    socketio.run(app,host="0.0.0.0",port=3080,allow_unsafe_werkzeug=True)
+    socketio.run(app,host="0.0.0.0",port=8090,allow_unsafe_werkzeug=True)
