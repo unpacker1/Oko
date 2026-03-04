@@ -263,4 +263,4 @@ def api_data(): return jsonify(global_data)
 if __name__=="__main__":
     Thread(target=live_data_loop, daemon=True).start()
     log_event("Flask + SocketIO başlatılıyor...")
-    socketio.run(app, host="0.0.0.0", port=8080, allow_unsafe_werkzeug=True)
+    socketio.run(app, host="0.0.0.0", port=5050, allow_unsafe_werkzeug=True)
