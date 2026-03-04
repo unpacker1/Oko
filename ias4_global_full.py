@@ -1,4 +1,4 @@
-# ias4_global_full_mobile.py
+# ias4_global_full.py
 import requests, datetime, logging, time, math
 from flask import Flask, render_template_string, jsonify
 from flask_socketio import SocketIO
