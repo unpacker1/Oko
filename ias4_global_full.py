@@ -1,8 +1,11 @@
 # ias4_global_full.py
-import datetime, math, time, random, logging
+import random
+import datetime
+import time
+import logging
+from threading import Thread
 from flask import Flask, render_template_string, jsonify
 from flask_socketio import SocketIO
-from threading import Thread
 
 # -------------------------------
 # LOGGING
@@ -10,201 +13,162 @@ from threading import Thread
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
-def log_event(msg):
-    logging.info(msg)
-
 # -------------------------------
-# GLOBAL DATA STORE (DEMO)
-# -------------------------------
-global_data = {
-    "flights": [],
-    "ships": [],
-    "satellites": [],
-    "weather": [],
-    "flight_routes": {},
-    "ship_routes": {},
-    "satellite_routes": {},
-    "last_update": None
-}
-
-# -------------------------------
-# DEMO DATA GENERATORS
-# -------------------------------
-def generate_demo_flights():
-    flights = []
-    for i in range(5):
-        lon = random.uniform(-180, 180)
-        lat = random.uniform(-85, 85)
-        alt = random.uniform(9000, 12000)  # metre
-        flights.append({
-            "icao24": f"DEMO{i}",
-            "callsign": f"FLIGHT{i}",
-            "longitude": lon,
-            "latitude": lat,
-            "altitude": alt,
-            "velocity": random.uniform(200, 300)
-        })
-        # Rota kaydı
-        if f"DEMO{i}" not in global_data["flight_routes"]:
-            global_data["flight_routes"][f"DEMO{i}"] = []
-        global_data["flight_routes"][f"DEMO{i}"].append([lon, lat, alt])
-        if len(global_data["flight_routes"][f"DEMO{i}"]) > 30:
-            global_data["flight_routes"][f"DEMO{i}"].pop(0)
-    return flights
-
-def generate_demo_ships():
-    ships = []
-    for i in range(5):
-        lon = random.uniform(-180, 180)
-        lat = random.uniform(-85, 85)
-        ships.append({
-            "mmsi": f"SHIP{i}",
-            "name": f"SHIP{i}",
-            "longitude": lon,
-            "latitude": lat,
-            "speed": random.uniform(10, 30)
-        })
-        if f"SHIP{i}" not in global_data["ship_routes"]:
-            global_data["ship_routes"][f"SHIP{i}"] = []
-        global_data["ship_routes"][f"SHIP{i}"].append([lon, lat, 0])
-        if len(global_data["ship_routes"][f"SHIP{i}"]) > 30:
-            global_data["ship_routes"][f"SHIP{i}"].pop(0)
-    return ships
-
-def generate_demo_satellites():
-    sats = []
-    for i in range(3):
-        lon = random.uniform(-180, 180)
-        lat = random.uniform(-85, 85)
-        alt = random.uniform(400, 800) * 1000  # metre
-        sats.append({
-            "norad_id": f"SAT{i}",
-            "name": f"SAT{i}",
-            "longitude": lon,
-            "latitude": lat,
-            "altitude": alt
-        })
-        if f"SAT{i}" not in global_data["satellite_routes"]:
-            global_data["satellite_routes"][f"SAT{i}"] = []
-        global_data["satellite_routes"][f"SAT{i}"].append([lon, lat, alt])
-        if len(global_data["satellite_routes"][f"SAT{i}"]) > 30:
-            global_data["satellite_routes"][f"SAT{i}"].pop(0)
-    return sats
-
-def generate_demo_weather():
-    locations = ["New York","London","Tokyo","Sydney","Cape Town","Dubai"]
-    weather = []
-    for loc in locations:
-        weather.append({
-            "name": loc,
-            "latitude": random.uniform(-85, 85),
-            "longitude": random.uniform(-180, 180),
-            "temperature": random.uniform(-10, 35),
-            "description": "Sunny"
-        })
-    return weather
-
-# -------------------------------
-# DEMO DATA LOOP
-# -------------------------------
-def demo_data_loop():
-    while True:
-        global_data["flights"] = generate_demo_flights()
-        global_data["ships"] = generate_demo_ships()
-        global_data["satellites"] = generate_demo_satellites()
-        global_data["weather"] = generate_demo_weather()
-        global_data["last_update"] = datetime.datetime.utcnow().isoformat()
-        socketio.emit("live_data", global_data)
-        time.sleep(5)  # 5 saniyede bir güncelle
-
-# -------------------------------
-# FLASK + SOCKET.IO
+# FLASK + SOCKET.IO SETUP
 # -------------------------------
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-HTML_TEMPLATE = """
+# -------------------------------
+# GLOBAL DATA STORE
+# -------------------------------
+global_data = {
+    "flights": [],
+    "ships": [],
+    "last_update": None
+}
+
+# -------------------------------
+# RANDOM DEMO DATA GENERATOR
+# -------------------------------
+def generate_demo_flights(num=50):
+    flights = []
+    for i in range(num):
+        flights.append({
+            "icao24": f"F{i:03}",
+            "callsign": f"DEMO{i:03}",
+            "longitude": random.uniform(-180, 180),
+            "latitude": random.uniform(-90, 90),
+            "altitude": random.uniform(9000, 12000),  # metre
+            "velocity": random.uniform(200, 300),  # m/s
+            "true_track": random.uniform(0, 360)
+        })
+    return flights
+
+def generate_demo_ships(num=30):
+    ships = []
+    for i in range(num):
+        ships.append({
+            "mmsi": f"S{i:03}",
+            "name": f"DEMO_SHIP_{i:03}",
+            "longitude": random.uniform(-180, 180),
+            "latitude": random.uniform(-90, 90),
+            "speed": random.uniform(0, 20),
+            "course": random.uniform(0, 360)
+        })
+    return ships
+
+# -------------------------------
+# LIVE DATA LOOP
+# -------------------------------
+def live_data_loop():
+    while True:
+        try:
+            global_data["flights"] = generate_demo_flights()
+            global_data["ships"] = generate_demo_ships()
+            global_data["last_update"] = datetime.datetime.utcnow().isoformat()
+            socketio.emit("live_data", global_data)
+            logging.info(f"Updated demo data: {len(global_data['flights'])} flights, {len(global_data['ships'])} ships")
+        except Exception as e:
+            logging.error(f"Error generating demo data: {e}")
+        time.sleep(5)  # 5 saniyede bir güncelle
+
+# -------------------------------
+# ROUTES
+# -------------------------------
+@app.route("/")
+def index():
+    html = """
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="utf-8" />
     <title>IAS4 Global Demo</title>
-    <script src="https://cesium.com/downloads/cesiumjs/releases/1.106/Build/Cesium/Cesium.js"></script>
-    <link href="https://cesium.com/downloads/cesiumjs/releases/1.106/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>html, body, #map {{ width:100%; height:100%; margin:0; padding:0; }}</style>
+    <link href="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/deck.gl@8.10.20/dist.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 </head>
 <body>
-<h1>IAS4 Global Demo</h1>
-<div id="cesiumContainer" style="width:100%; height:600px;"></div>
-<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<div id="map"></div>
 <script>
-var viewer = new Cesium.Viewer('cesiumContainer', {
-    terrainProvider: Cesium.createWorldTerrain(),
-    shouldAnimate: true
-});
+const socket = io();
 
-var flightEntities = {};
-var shipEntities = {};
-var satEntities = {};
+// MapLibre GL JS init
+const map = new maplibregl.Map({{
+    container: 'map',
+    style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+    center: [0,0],
+    zoom: 1
+}});
 
-var socket = io();
-socket.on('live_data', function(data){
-    // Flights
-    data.flights.forEach(function(f){
-        if(!flightEntities[f.icao24]){
-            flightEntities[f.icao24] = viewer.entities.add({
-                position: Cesium.Cartesian3.fromDegrees(f.longitude, f.latitude, f.altitude),
-                point: { pixelSize: 10, color: Cesium.Color.RED },
-                label: { text: f.callsign, font: '14pt sans-serif', style: Cesium.LabelStyle.FILL, verticalOrigin: Cesium.VerticalOrigin.BOTTOM }
-            });
-        } else {
-            flightEntities[f.icao24].position = Cesium.Cartesian3.fromDegrees(f.longitude, f.latitude, f.altitude);
-        }
-    });
-    // Ships
-    data.ships.forEach(function(s){
-        if(!shipEntities[s.mmsi]){
-            shipEntities[s.mmsi] = viewer.entities.add({
-                position: Cesium.Cartesian3.fromDegrees(s.longitude, s.latitude, 0),
-                point: { pixelSize: 8, color: Cesium.Color.BLUE },
-                label: { text: s.name, font: '12pt sans-serif', style: Cesium.LabelStyle.FILL, verticalOrigin: Cesium.VerticalOrigin.BOTTOM }
-            });
-        } else {
-            shipEntities[s.mmsi].position = Cesium.Cartesian3.fromDegrees(s.longitude, s.latitude, 0);
-        }
-    });
-    // Satellites
-    data.satellites.forEach(function(sat){
-        if(!satEntities[sat.norad_id]){
-            satEntities[sat.norad_id] = viewer.entities.add({
-                position: Cesium.Cartesian3.fromDegrees(sat.longitude, sat.latitude, sat.altitude),
-                point: { pixelSize: 6, color: Cesium.Color.YELLOW },
-                label: { text: sat.name, font: '10pt sans-serif', style: Cesium.LabelStyle.FILL, verticalOrigin: Cesium.VerticalOrigin.BOTTOM }
-            });
-        } else {
-            satEntities[sat.norad_id].position = Cesium.Cartesian3.fromDegrees(sat.longitude, sat.latitude, sat.altitude);
-        }
-    });
-});
+// Deck.gl overlay
+let flightsLayer = null;
+let shipsLayer = null;
+
+function updateLayers(data) {{
+    const flightsData = data.flights.map(f => ({
+        position: [f.longitude, f.latitude, f.altitude],
+        icao24: f.icao24,
+        callsign: f.callsign
+    }));
+
+    const shipsData = data.ships.map(s => ({
+        position: [s.longitude, s.latitude, 0],
+        name: s.name
+    }));
+
+    flightsLayer = new deck.ScatterplotLayer({{
+        id: 'flights',
+        data: flightsData,
+        getPosition: d => d.position,
+        getFillColor: [255, 0, 0],
+        getRadius: 100000,
+        radiusUnits: 'meters',
+        pickable: true
+    }});
+
+    shipsLayer = new deck.ScatterplotLayer({{
+        id: 'ships',
+        data: shipsData,
+        getPosition: d => d.position,
+        getFillColor: [0, 0, 255],
+        getRadius: 50000,
+        radiusUnits: 'meters',
+        pickable: true
+    }});
+
+    const deckgl = new deck.DeckGL({{
+        map: map,
+        layers: [flightsLayer, shipsLayer]
+    }});
+}}
+
+socket.on('live_data', (data) => {{
+    updateLayers(data);
+}});
 </script>
 </body>
 </html>
 """
-
-@app.route("/")
-def index():
-    return render_template_string(HTML_TEMPLATE)
+    return render_template_string(html)
 
 @app.route("/api/global_data")
 def api_global_data():
     return jsonify(global_data)
 
 # -------------------------------
-# RUN SERVER
+# MAIN
 # -------------------------------
 if __name__ == "__main__":
-    demo_thread = Thread(target=demo_data_loop, daemon=True)
-    demo_thread.start()
+    # Live data loop thread
+    t = Thread(target=live_data_loop, daemon=True)
+    t.start()
 
-    # Random port (8000-8999)
+    # Random port seçimi 8000-8999
+    import random
     port = random.randint(8000, 8999)
-    log_event(f"Demo sunucu başlatılıyor: http://0.0.0.0:{port}")
-    socketio.run(app, host="0.0.0.0", port=port, allow_unsafe_werkzeug=True)
+    logging.info(f"Starting Flask Socket.IO server on port {port}")
+    socketio.run(app, host="0.0.0.0", port=port)
