@@ -1,210 +1,213 @@
-# ias4_global_full.py
-import random, time, math, datetime, logging
+import random
+import time
+import math
+import datetime
 from threading import Thread
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string
 from flask_socketio import SocketIO
-import socket
 
-# -------------------------------
-# LOGGING
-# -------------------------------
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
-
-def log(msg):
-    logging.info(msg)
-
-# -------------------------------
-# GLOBAL DATA STORE
-# -------------------------------
-global_data = {
-    "flights": [],
-    "ships": [],
-    "satellites": [],
-    "flight_routes": {},
-    "ship_routes": {},
-    "satellite_routes": {},
-    "last_update": None
-}
-
-# -------------------------------
-# CONFIG
-# -------------------------------
-ROUTE_HISTORY_LIMIT = 30
-SATELLITE_ROUTE_FORECAST_MINUTES = 60
-
-# -------------------------------
-# DEMO DATA GENERATOR
-# -------------------------------
-def generate_demo_flights(num=20):
-    flights = []
-    for i in range(num):
-        icao24 = f"FL{i:04d}"
-        lat = random.uniform(-60, 60)
-        lon = random.uniform(-180, 180)
-        alt = random.uniform(8000, 12000)
-        vel = random.uniform(200, 300)
-        heading = random.uniform(0, 360)
-        flights.append({
-            "icao24": icao24,
-            "callsign": f"DEMO{i}",
-            "longitude": lon,
-            "latitude": lat,
-            "altitude": alt,
-            "velocity": vel,
-            "true_track": heading
-        })
-    return flights
-
-def generate_demo_ships(num=15):
-    ships = []
-    for i in range(num):
-        mmsi = f"SH{i:04d}"
-        lat = random.uniform(-60, 60)
-        lon = random.uniform(-180, 180)
-        cog = random.uniform(0, 360)
-        sog = random.uniform(5, 30)
-        ships.append({
-            "mmsi": mmsi,
-            "name": f"DEMO_SHIP{i}",
-            "longitude": lon,
-            "latitude": lat,
-            "course": cog,
-            "speed": sog
-        })
-    return ships
-
-def generate_demo_satellites(num=5):
-    sats = []
-    for i in range(num):
-        norad_id = f"SAT{i:03d}"
-        lat = random.uniform(-60, 60)
-        lon = random.uniform(-180, 180)
-        alt = random.uniform(400, 800)
-        sats.append({
-            "norad_id": norad_id,
-            "name": f"DEMO_SAT{i}",
-            "latitude": lat,
-            "longitude": lon,
-            "altitude": alt*1000  # metre
-        })
-    return sats
-
-# -------------------------------
-# ROUTE UPDATES
-# -------------------------------
-def update_routes(entity_list, id_key, route_dict):
-    current_ids = set()
-    for ent in entity_list:
-        ent_id = ent[id_key]
-        current_ids.add(ent_id)
-        pos = [ent['longitude'], ent['latitude'], ent.get('altitude', 0)]
-        if ent_id not in route_dict:
-            route_dict[ent_id] = []
-        route_dict[ent_id].append(pos)
-        if len(route_dict[ent_id]) > ROUTE_HISTORY_LIMIT:
-            route_dict[ent_id].pop(0)
-    # Remove missing
-    to_remove = [eid for eid in route_dict if eid not in current_ids]
-    for eid in to_remove:
-        del route_dict[eid]
-    return entity_list
-
-# -------------------------------
-# LIVE DATA LOOP
-# -------------------------------
-def live_data_loop():
-    while True:
-        # Uçak
-        flights = generate_demo_flights()
-        global_data['flights'] = update_routes(flights, 'icao24', global_data['flight_routes'])
-        # Gemi
-        ships = generate_demo_ships()
-        global_data['ships'] = update_routes(ships, 'mmsi', global_data['ship_routes'])
-        # Uydu
-        sats = generate_demo_satellites()
-        global_data['satellites'] = update_routes(sats, 'norad_id', global_data['satellite_routes'])
-        global_data['last_update'] = datetime.datetime.utcnow().isoformat()
-        socketio.emit('live_data', global_data)
-        time.sleep(10)
-
-# -------------------------------
-# FLASK + SOCKETIO
-# -------------------------------
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# -------------------------------
-# INDEX HTML
-# -------------------------------
-index_html = """
+# ---------------------------
+# CONFIG
+# ---------------------------
+ENTITY_COUNT_FLIGHT = 25
+ENTITY_COUNT_SHIP = 15
+ENTITY_COUNT_SAT = 6
+ROUTE_LENGTH = 40
+
+# ---------------------------
+# DATA STORE
+# ---------------------------
+data_store = {
+    "flights": {},
+    "ships": {},
+    "sats": {}
+}
+
+# ---------------------------
+# ENTITY INIT
+# ---------------------------
+def create_entities():
+    for i in range(ENTITY_COUNT_FLIGHT):
+        data_store["flights"][f"F{i}"] = {
+            "lat": random.uniform(-60,60),
+            "lon": random.uniform(-180,180),
+            "alt": random.uniform(9000,12000),
+            "speed": random.uniform(220,280),
+            "heading": random.uniform(0,360),
+            "route":[]
+        }
+
+    for i in range(ENTITY_COUNT_SHIP):
+        data_store["ships"][f"S{i}"] = {
+            "lat": random.uniform(-60,60),
+            "lon": random.uniform(-180,180),
+            "speed": random.uniform(10,25),
+            "heading": random.uniform(0,360),
+            "route":[]
+        }
+
+    for i in range(ENTITY_COUNT_SAT):
+        data_store["sats"][f"T{i}"] = {
+            "lat": random.uniform(-60,60),
+            "lon": random.uniform(-180,180),
+            "alt": random.uniform(400000,800000),
+            "speed": 7.8,  # km/s approx
+            "heading": random.uniform(0,360),
+            "route":[]
+        }
+
+# ---------------------------
+# REALISTIC MOVEMENT
+# ---------------------------
+def move_entity(e, is_sat=False):
+    distance = e["speed"] * 0.00005
+    rad = math.radians(e["heading"])
+    e["lat"] += distance * math.cos(rad)
+    e["lon"] += distance * math.sin(rad)
+
+    if e["lat"] > 85 or e["lat"] < -85:
+        e["heading"] += 180
+
+    if e["lon"] > 180: e["lon"] -= 360
+    if e["lon"] < -180: e["lon"] += 360
+
+    e["route"].append([e["lon"], e["lat"], e.get("alt",0)])
+    if len(e["route"]) > ROUTE_LENGTH:
+        e["route"].pop(0)
+
+# ---------------------------
+# LIVE LOOP
+# ---------------------------
+def live_loop():
+    while True:
+        for f in data_store["flights"].values():
+            move_entity(f)
+        for s in data_store["ships"].values():
+            move_entity(s)
+        for t in data_store["sats"].values():
+            move_entity(t, True)
+
+        socketio.emit("update", data_store)
+        time.sleep(1)
+
+# ---------------------------
+# CLEAN INDEX
+# ---------------------------
+INDEX = """
 <!DOCTYPE html>
 <html>
 <head>
-<title>IAS4 Demo Global Command Center</title>
+<title>IAS4 Global Command</title>
 <script src="https://cesium.com/downloads/cesiumjs/releases/1.106/Build/Cesium/Cesium.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.1/socket.io.min.js"></script>
+<link href="https://cesium.com/downloads/cesiumjs/releases/1.106/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+
 <style>
-html,body,#cesiumContainer{width:100%;height:100%;margin:0;padding:0;overflow:hidden;}
-#controlPanel{position:absolute;top:10px;left:10px;background:rgba(255,255,255,0.8);padding:10px;z-index:10;}
+html,body,#map{margin:0;height:100%;width:100%;overflow:hidden;font-family:Arial;}
+#panel{
+position:absolute;
+top:15px;
+left:15px;
+background:rgba(0,0,0,0.7);
+color:white;
+padding:15px;
+border-radius:10px;
+z-index:10;
+}
+label{display:block;margin-bottom:6px;}
 </style>
 </head>
+
 <body>
-<div id="cesiumContainer"></div>
-<div id="controlPanel">
-<input type="checkbox" id="flights_cb" checked> Uçaklar<br>
-<input type="checkbox" id="ships_cb" checked> Gemiler<br>
-<input type="checkbox" id="sats_cb" checked> Uydular
+<div id="panel">
+<label><input type="checkbox" id="cb_f" checked> Uçak Trafiği</label>
+<label><input type="checkbox" id="cb_s" checked> Gemi Trafiği</label>
+<label><input type="checkbox" id="cb_t" checked> Uydu Trafiği</label>
 </div>
+<div id="map"></div>
+
 <script>
-var viewer = new Cesium.Viewer('cesiumContainer', {terrainProvider: Cesium.createWorldTerrain()});
-var flightEntities = {}, shipEntities = {}, satEntities = {};
+var viewer = new Cesium.Viewer('map',{
+    baseLayerPicker:false,
+    timeline:false,
+    animation:false,
+    terrainProvider: Cesium.createWorldTerrain()
+});
 
 var socket = io();
+var entities = {};
 
-socket.on('live_data', function(data){
-    // Uçaklar
-    if(document.getElementById('flights_cb').checked){
-        data.flights.forEach(f=>{
-            if(!flightEntities[f.icao24]){
-                flightEntities[f.icao24] = viewer.entities.add({
-                    name: f.callsign,
-                    position: Cesium.Cartesian3.fromDegrees(f.longitude,f.latitude,f.altitude),
-                    point: {pixelSize:10,color:Cesium.Color.RED}
-                });
-            } else {
-                flightEntities[f.icao24].position = Cesium.Cartesian3.fromDegrees(f.longitude,f.latitude,f.altitude);
-            }
-        });
+function clearLayer(prefix){
+    for(var id in entities){
+        if(id.startsWith(prefix)){
+            viewer.entities.remove(entities[id]);
+            delete entities[id];
+        }
     }
-    // Gemiler
-    if(document.getElementById('ships_cb').checked){
-        data.ships.forEach(s=>{
-            if(!shipEntities[s.mmsi]){
-                shipEntities[s.mmsi] = viewer.entities.add({
-                    name: s.name,
-                    position: Cesium.Cartesian3.fromDegrees(s.longitude,s.latitude,0),
-                    point: {pixelSize:10,color:Cesium.Color.BLUE}
+}
+
+socket.on("update", function(data){
+
+    if(document.getElementById("cb_f").checked){
+        for(var id in data.flights){
+            var f = data.flights[id];
+            if(!entities["F"+id]){
+                entities["F"+id] = viewer.entities.add({
+                    position: Cesium.Cartesian3.fromDegrees(f.lon,f.lat,f.alt),
+                    point:{pixelSize:8,color:Cesium.Color.RED},
+                    polyline:{
+                        positions:f.route.map(r=>Cesium.Cartesian3.fromDegrees(r[0],r[1],r[2])),
+                        width:2,
+                        material:Cesium.Color.RED
+                    }
                 });
-            } else {
-                shipEntities[s.mmsi].position = Cesium.Cartesian3.fromDegrees(s.longitude,s.latitude,0);
+            }else{
+                entities["F"+id].position = Cesium.Cartesian3.fromDegrees(f.lon,f.lat,f.alt);
             }
-        });
-    }
-    // Uydular
-    if(document.getElementById('sats_cb').checked){
-        data.satellites.forEach(s=>{
-            if(!satEntities[s.norad_id]){
-                satEntities[s.norad_id] = viewer.entities.add({
-                    name: s.name,
-                    position: Cesium.Cartesian3.fromDegrees(s.longitude,s.latitude,s.altitude),
-                    point: {pixelSize:10,color:Cesium.Color.GREEN}
+        }
+    } else { clearLayer("F"); }
+
+    if(document.getElementById("cb_s").checked){
+        for(var id in data.ships){
+            var s = data.ships[id];
+            if(!entities["S"+id]){
+                entities["S"+id] = viewer.entities.add({
+                    position: Cesium.Cartesian3.fromDegrees(s.lon,s.lat,0),
+                    point:{pixelSize:8,color:Cesium.Color.BLUE},
+                    polyline:{
+                        positions:s.route.map(r=>Cesium.Cartesian3.fromDegrees(r[0],r[1],0)),
+                        width:2,
+                        material:Cesium.Color.BLUE
+                    }
                 });
-            } else {
-                satEntities[s.norad_id].position = Cesium.Cartesian3.fromDegrees(s.longitude,s.latitude,s.altitude);
+            }else{
+                entities["S"+id].position = Cesium.Cartesian3.fromDegrees(s.lon,s.lat,0);
             }
-        });
-    }
+        }
+    } else { clearLayer("S"); }
+
+    if(document.getElementById("cb_t").checked){
+        for(var id in data.sats){
+            var t = data.sats[id];
+            if(!entities["T"+id]){
+                entities["T"+id] = viewer.entities.add({
+                    position: Cesium.Cartesian3.fromDegrees(t.lon,t.lat,t.alt),
+                    point:{pixelSize:8,color:Cesium.Color.LIME},
+                    polyline:{
+                        positions:t.route.map(r=>Cesium.Cartesian3.fromDegrees(r[0],r[1],r[2])),
+                        width:2,
+                        material:Cesium.Color.LIME
+                    }
+                });
+            }else{
+                entities["T"+id].position = Cesium.Cartesian3.fromDegrees(t.lon,t.lat,t.alt);
+            }
+        }
+    } else { clearLayer("T"); }
+
 });
 </script>
 </body>
@@ -213,25 +216,15 @@ socket.on('live_data', function(data){
 
 @app.route("/")
 def index():
-    return render_template_string(index_html)
+    return INDEX
 
-@app.route("/api/global_data")
-def api_data():
-    return jsonify(global_data)
-
-# -------------------------------
-# RANDOM PORT HELPER
-# -------------------------------
-def get_random_port():
-    return random.randint(8000, 8999)
-
-# -------------------------------
-# MAIN
-# -------------------------------
+# ---------------------------
+# START
+# ---------------------------
 if __name__ == "__main__":
-    data_thread = Thread(target=live_data_loop, daemon=True)
-    data_thread.start()
+    create_entities()
+    Thread(target=live_loop, daemon=True).start()
 
-    port = get_random_port()
-    log(f"Server starting on http://0.0.0.0:{port}")
+    port = random.randint(8000, 9000)
+    print(f"\n🚀 SERVER RUNNING:\nhttp://0.0.0.0:{port}\n")
     socketio.run(app, host="0.0.0.0", port=port)
