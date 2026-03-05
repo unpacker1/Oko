@@ -6,20 +6,18 @@ import psutil
 import socket
 import subprocess
 import platform
-from flask import Flask, request, redirect, session, jsonify, render_template_string
-from datetime import datetime
+from flask import Flask, request, redirect, session, jsonify
 
 app = Flask(__name__)
 app.secret_key = "termux-pro-secret"
 
-# Login bilgileri
+# Kullanıcı adı / şifre
 USER = "q"
 PASS = "q"
 
 # =========================
 # Yardımcı Fonksiyonlar
 # =========================
-
 def run(cmd):
     try:
         return subprocess.check_output(cmd,shell=True,text=True,stderr=subprocess.STDOUT)
@@ -28,40 +26,28 @@ def run(cmd):
 
 def sysinfo():
     data={}
-    try:
-        data["CPU"] = psutil.cpu_percent(interval=1)
-    except:
-        data["CPU"] = "Erişim yok"
-    try:
-        data["RAM"] = psutil.virtual_memory().percent
-    except:
-        data["RAM"] = "Erişim yok"
-    try:
-        data["Disk"] = psutil.disk_usage("/").percent
-    except:
-        data["Disk"] = "Erişim yok"
-    try:
-        data["IP"] = socket.gethostbyname(socket.gethostname())
-    except:
-        data["IP"] = "Bilinmiyor"
-    try:
-        data["System"] = platform.system() + " " + platform.release()
-    except:
-        data["System"] = "Bilinmiyor"
+    try: data["CPU"] = psutil.cpu_percent(interval=1)
+    except: data["CPU"] = "Erişim yok"
+    try: data["RAM"] = psutil.virtual_memory().percent
+    except: data["RAM"] = "Erişim yok"
+    try: data["Disk"] = psutil.disk_usage("/").percent
+    except: data["Disk"] = "Erişim yok"
+    try: data["IP"] = socket.gethostbyname(socket.gethostname())
+    except: data["IP"] = "Bilinmiyor"
+    try: data["System"] = platform.system() + " " + platform.release()
+    except: data["System"] = "Bilinmiyor"
     try:
         b = psutil.sensors_battery()
         if b:
             data["Battery"] = f"{b.percent}% {'Şarjda' if b.power_plugged else 'Şarjda değil'}"
         else:
             data["Battery"] = "Yok"
-    except:
-        data["Battery"] = "Bilinmiyor"
+    except: data["Battery"] = "Bilinmiyor"
     return data
 
 # =========================
 # Login Sayfası
 # =========================
-
 @app.route("/", methods=["GET","POST"])
 def login():
     if request.method=="POST":
@@ -86,12 +72,10 @@ def login():
 # =========================
 # Panel Sayfası
 # =========================
-
 @app.route("/panel")
 def panel():
     if not session.get("login"):
         return redirect("/")
-    # Hazır sorgular
     queries = [
         {"name":"Sistem Süresi","cmd":"uptime"},
         {"name":"RAM Kullanımı","cmd":"free -h"},
@@ -103,6 +87,12 @@ def panel():
         {"name":"Android Sürümü","cmd":"getprop ro.build.version.release"},
         {"name":"Kurulu Paketler","cmd":"pkg list-installed"}
     ]
+
+    # Hazır sorgu butonlarını oluştur
+    buttons_html = ""
+    for q in queries:
+        buttons_html += f'<div class="card"><button onclick="run_query(`{q["cmd"].replace("`","\\`")}`)">{q["name"]}</button></div>'
+
     html = f"""
 <!DOCTYPE html>
 <html>
@@ -116,6 +106,7 @@ h1{{text-align:center}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px}}
 .card{{background:#1e293b;padding:20px;border-radius:10px;text-align:center;font-size:16px}}
 button{{padding:10px 15px;margin-top:10px;width:90%}}
+input{{padding:10px;width:70%}}
 pre{{background:#0f172a;padding:10px;border-radius:5px;max-height:300px;overflow:auto}}
 </style>
 </head>
@@ -123,29 +114,17 @@ pre{{background:#0f172a;padding:10px;border-radius:5px;max-height:300px;overflow
 <h1>🚀 Termux PRO Panel</h1>
 
 <div class="grid">
-<div class="card">
-<h3>CPU</h3><div id="cpu"></div>
-</div>
-<div class="card">
-<h3>RAM</h3><div id="ram"></div>
-</div>
-<div class="card">
-<h3>Disk</h3><div id="disk"></div>
-</div>
-<div class="card">
-<h3>IP</h3><div id="ip"></div>
-</div>
-<div class="card">
-<h3>Battery</h3><div id="battery"></div>
-</div>
-<div class="card">
-<h3>System</h3><div id="system"></div>
-</div>
+<div class="card"><h3>CPU</h3><div id="cpu"></div></div>
+<div class="card"><h3>RAM</h3><div id="ram"></div></div>
+<div class="card"><h3>Disk</h3><div id="disk"></div></div>
+<div class="card"><h3>IP</h3><div id="ip"></div></div>
+<div class="card"><h3>Battery</h3><div id="battery"></div></div>
+<div class="card"><h3>System</h3><div id="system"></div></div>
 </div>
 
 <h2>⚡ Hazır Sorgular</h2>
 <div class="grid">
-{"".join([f'<div class="card"><button onclick="run_query(`{q["cmd"]}`)">{q["name"]}</button></div>' for q in queries])}
+{buttons_html}
 </div>
 
 <h2>🖥 Terminal</h2>
@@ -153,31 +132,28 @@ pre{{background:#0f172a;padding:10px;border-radius:5px;max-height:300px;overflow
 <pre id=out></pre>
 
 <script>
-function update(){
-fetch('/api')
-.then(r=>r.json())
-.then(d=>{
+function update(){{
+fetch('/api').then(r=>r.json()).then(d=>{{
 document.getElementById('cpu').innerText=d.CPU+'%'
 document.getElementById('ram').innerText=d.RAM+'%'
 document.getElementById('disk').innerText=d.Disk+'%'
 document.getElementById('ip').innerText=d.IP
 document.getElementById('system').innerText=d.System
 document.getElementById('battery').innerText=d.Battery
-})
-}
+}})}}
 setInterval(update,2000)
 update()
 
-function run_query(cmd){
-fetch("/cmd",{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{cmd:cmd}})})
+function run_query(cmd){{
+fetch("/cmd",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{cmd:cmd}})}})
 .then(r=>r.text()).then(t=>document.getElementById('out').innerText=t)
-}
+}}
 
-function run_cmd(){
+function run_cmd(){{
 c=document.getElementById("cmd").value
-fetch("/cmd",{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{cmd:c}})})
+fetch("/cmd",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{cmd:c}})}})
 .then(r=>r.text()).then(t=>document.getElementById('out').innerText=t)
-}
+}}
 </script>
 
 </body>
@@ -188,7 +164,6 @@ fetch("/cmd",{method:"POST",headers:{{"Content-Type":"application/json"}},body:J
 # =========================
 # API ve Terminal
 # =========================
-
 @app.route("/api")
 def api():
     if not session.get("login"):
@@ -205,6 +180,5 @@ def cmd():
 # =========================
 # Çalıştır
 # =========================
-
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
