@@ -1,208 +1,172 @@
-#!/data/data/com.termux/files/usr/bin/python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import os
+import psutil
+import socket
+import platform
 import subprocess
-import json
-from flask import Flask, render_template_string
 from datetime import datetime
+from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
-# Termux API komutlarını çalıştırıp JSON çıktısını döndüren yardımcı fonksiyon
-def termux_command(cmd, timeout=5):
+def get_ip():
     try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
-        if result.returncode == 0:
-            try:
-                return json.loads(result.stdout)
-            except json.JSONDecodeError:
-                # JSON değilse düz metin olarak döndür
-                return {"çıktı": result.stdout.strip()}
-        else:
-            return {"hata": result.stderr.strip()}
-    except subprocess.TimeoutExpired:
-        return {"hata": "Komut zaman aşımına uğradı."}
-    except Exception as e:
-        return {"hata": str(e)}
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8",80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return "Bilinmiyor"
 
-# Tüm verileri toplayan ana fonksiyon
-def collect_all_data():
+def run_cmd(cmd):
+    try:
+        return subprocess.check_output(cmd,shell=True,text=True).strip()
+    except:
+        return "N/A"
+
+def collect():
+
     data = {}
 
-    # Telefon bilgileri
-    data['cihaz'] = termux_command("termux-telephony-deviceinfo")
+    data["Cihaz"] = {
+        "Sistem": platform.system(),
+        "Node": platform.node(),
+        "Release": platform.release(),
+        "Makine": platform.machine(),
+        "IP": get_ip()
+    }
 
-    # Batarya durumu
-    data['batarya'] = termux_command("termux-battery-status")
+    data["CPU"] = {
+        "Kullanım %": psutil.cpu_percent(interval=1),
+        "Çekirdek": psutil.cpu_count()
+    }
 
-    # Konum (önce son bilinen konumu dene, olmazsa ağ tabanlı dene)
-    data['konum'] = termux_command("termux-location -r last")
-    if data['konum'].get("hata"):
-        data['konum'] = termux_command("termux-location -p network")
+    ram = psutil.virtual_memory()
+    data["RAM"] = {
+        "Toplam": f"{ram.total//(1024**3)} GB",
+        "Kullanılan": f"{ram.used//(1024**3)} GB",
+        "Yüzde": ram.percent
+    }
 
-    # Ağ bilgileri
-    data['wifi'] = termux_command("termux-wifi-connectioninfo")
-    data['cell'] = termux_command("termux-cellulario-info")
+    disk = psutil.disk_usage("/")
+    data["Depolama"] = {
+        "Toplam": f"{disk.total//(1024**3)} GB",
+        "Kullanılan": f"{disk.used//(1024**3)} GB",
+        "Yüzde": disk.percent
+    }
 
-    # Sensörler (ilk 5 sensörü al)
-    sensor_data = termux_command("termux-sensor -l")
-    sensors_list = []
-    if isinstance(sensor_data, list):
-        sensors_list = sensor_data[:5]
-    elif isinstance(sensor_data, dict) and "hata" not in sensor_data:
-        sensors_list = list(sensor_data.keys())[:5]
-    data['sensörler'] = {}
-    for s in sensors_list:
-        data['sensörler'][s] = termux_command(f"termux-sensor -s {s} -n 1")
+    battery = psutil.sensors_battery()
+    if battery:
+        data["Batarya"] = {
+            "Seviye": f"%{battery.percent}",
+            "Şarj": battery.power_plugged
+        }
 
-    # Kamera bilgisi
-    data['kamera'] = termux_command("termux-camera-info")
-
-    # Rehber (ilk 5 kişi)
-    contacts = termux_command("termux-contact-list")
-    if isinstance(contacts, list):
-        data['rehber'] = contacts[:5]
-    else:
-        data['rehber'] = contacts
-
-    # SMS (son 5 SMS)
-    sms = termux_command("termux-sms-inbox -l 5")
-    if isinstance(sms, list):
-        data['sms'] = sms
-    else:
-        data['sms'] = {"bilgi": "SMS alınamadı veya izin yok"}
-
-    # Çağrı kayıtları (son 5)
-    calls = termux_command("termux-call-log -l 5")
-    if isinstance(calls, list):
-        data['çağrılar'] = calls
-    else:
-        data['çağrılar'] = {"bilgi": "Çağrı kaydı alınamadı"}
-
-    # Depolama bilgisi
-    storage = termux_command("termux-storage-list")
-    data['depolama'] = storage
-
-    # Pano içeriği
-    data['pano'] = termux_command("termux-clipboard-get")
+    wifi = run_cmd("termux-wifi-connectioninfo")
+    data["WiFi"] = wifi
 
     return data
 
-# HTML şablonu (ensure_ascii kaldırıldı)
-HTML_TEMPLATE = """
+
+HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>📱 Termux Telefon Paneli</title>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="30">
-    <style>
-        * { box-sizing: border-box; }
-        body {
-            font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
-            background: #f0f2f5;
-            margin: 0;
-            padding: 20px;
-            color: #333;
-        }
-        h1 {
-            text-align: center;
-            color: #2c3e50;
-            margin-bottom: 30px;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-            gap: 20px;
-        }
-        .card {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-            overflow: hidden;
-            transition: transform 0.2s;
-            display: flex;
-            flex-direction: column;
-        }
-        .card:hover {
-            transform: translateY(-4px);
-        }
-        .card-header {
-            background: #3498db;
-            color: white;
-            padding: 12px 16px;
-            font-size: 1.2rem;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .card-header i { font-size: 1.4rem; }
-        .card-body {
-            padding: 16px;
-            overflow-x: auto;
-            flex: 1;
-        }
-        pre {
-            background: #f8f9fa;
-            border: 1px solid #e9ecef;
-            border-radius: 6px;
-            padding: 12px;
-            margin: 0;
-            font-size: 0.85rem;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-        .footer {
-            text-align: center;
-            margin-top: 30px;
-            color: #7f8c8d;
-            font-size: 0.9rem;
-        }
-        .error { color: #e74c3c; }
-        .loading { opacity: 0.6; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="20">
+<title>Ultra Termux Panel</title>
+
+<style>
+
+body{
+background:#0f172a;
+font-family:Arial;
+color:white;
+margin:0;
+padding:20px;
+}
+
+h1{
+text-align:center;
+margin-bottom:30px;
+}
+
+.grid{
+display:grid;
+grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+gap:20px;
+}
+
+.card{
+background:#1e293b;
+border-radius:10px;
+padding:15px;
+box-shadow:0 0 10px rgba(0,0,0,0.4);
+}
+
+.card h2{
+margin-top:0;
+font-size:18px;
+border-bottom:1px solid #334155;
+padding-bottom:5px;
+}
+
+pre{
+white-space:pre-wrap;
+font-size:13px;
+}
+
+.footer{
+text-align:center;
+margin-top:30px;
+opacity:.7;
+}
+
+</style>
 </head>
+
 <body>
-    <h1>📊 Kapsamlı Telefon Bilgi Paneli</h1>
-    <div class="grid">
-        {% for baslik, veri in data.items() %}
-        <div class="card">
-            <div class="card-header">
-                <span>{% if baslik == 'cihaz' %}📱{% elif baslik == 'batarya' %}🔋{% elif baslik == 'konum' %}📍{% elif baslik == 'wifi' %}📶{% elif baslik == 'cell' %}📡{% elif baslik == 'sensörler' %}📳{% elif baslik == 'kamera' %}📷{% elif baslik == 'rehber' %}👥{% elif baslik == 'sms' %}✉️{% elif baslik == 'çağrılar' %}📞{% elif baslik == 'depolama' %}💾{% elif baslik == 'pano' %}📋{% else %}📌{% endif %}</span>
-                <span>{{ baslik.upper() }}</span>
-            </div>
-            <div class="card-body">
-                {% if veri is mapping %}
-                    {% if veri.get('hata') %}
-                        <pre class="error">{{ veri.hata }}</pre>
-                    {% else %}
-                        <pre>{{ veri | tojson(indent=2) }}</pre>
-                    {% endif %}
-                {% elif veri is iterable and veri is not string %}
-                    <pre>{{ veri | tojson(indent=2) }}</pre>
-                {% else %}
-                    <pre>{{ veri }}</pre>
-                {% endif %}
-            </div>
-        </div>
-        {% endfor %}
-    </div>
-    <div class="footer">
-        Son güncelleme: {{ zaman }} • Sayfa her 30 saniyede bir yenilenir.
-    </div>
+
+<h1>🚀 Ultra Termux Sistem Paneli</h1>
+
+<div class="grid">
+
+{% for k,v in data.items() %}
+
+<div class="card">
+
+<h2>{{k}}</h2>
+
+<pre>{{v}}</pre>
+
+</div>
+
+{% endfor %}
+
+</div>
+
+<div class="footer">
+
+Son güncelleme: {{time}}
+
+</div>
+
 </body>
 </html>
 """
 
-@app.route('/')
+@app.route("/")
 def index():
-    veriler = collect_all_data()
-    zaman = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-    return render_template_string(HTML_TEMPLATE, data=veriler, zaman=zaman)
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    data = collect()
+    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+
+    return render_template_string(HTML,data=data,time=now)
+
+if __name__ == "__main__":
+
+    app.run(host="0.0.0.0",port=5000)
