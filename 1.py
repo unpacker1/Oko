@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
-import psutil
-import socket
-import subprocess
-import platform
+import os, psutil, socket, subprocess, platform, json
 from flask import Flask, request, redirect, session, jsonify
+from datetime import datetime
+import geocoder
 
 app = Flask(__name__)
-app.secret_key = "termux-pro-secret"
+app.secret_key = "termux-ultra-secret"
 
+# --------------------
 # Kullanıcı adı / şifre
+# --------------------
 USER = "q"
 PASS = "q"
 
-# =========================
+# --------------------
 # Yardımcı Fonksiyonlar
-# =========================
+# --------------------
 def run(cmd):
     try:
-        return subprocess.check_output(cmd,shell=True,text=True,stderr=subprocess.STDOUT)
+        return subprocess.check_output(cmd, shell=True, text=True, stderr=subprocess.STDOUT)
     except Exception as e:
         return f"Hata: {str(e)}"
 
 def sysinfo():
-    data={}
+    data = {}
     try: data["CPU"] = psutil.cpu_percent(interval=1)
     except: data["CPU"] = "Erişim yok"
     try: data["RAM"] = psutil.virtual_memory().percent
@@ -38,16 +38,18 @@ def sysinfo():
     except: data["System"] = "Bilinmiyor"
     try:
         b = psutil.sensors_battery()
-        if b:
-            data["Battery"] = f"{b.percent}% {'Şarjda' if b.power_plugged else 'Şarjda değil'}"
-        else:
-            data["Battery"] = "Yok"
+        if b: data["Battery"] = f"{b.percent}% {'Şarjda' if b.power_plugged else 'Şarjda değil'}"
+        else: data["Battery"] = "Yok"
     except: data["Battery"] = "Bilinmiyor"
+    try:
+        g = geocoder.ip('me')
+        data["Location"] = g.latlng if g.latlng else ["Bilinmiyor", "Bilinmiyor"]
+    except: data["Location"] = ["Bilinmiyor", "Bilinmiyor"]
     return data
 
-# =========================
+# --------------------
 # Login Sayfası
-# =========================
+# --------------------
 @app.route("/", methods=["GET","POST"])
 def login():
     if request.method=="POST":
@@ -58,8 +60,8 @@ def login():
             return redirect("/panel")
     return """
 <html>
-<body style="background:#0f172a;color:white;font-family:Arial;text-align:center;padding-top:80px">
-<h1>🔐 Termux PRO Panel</h1>
+<body style="background:#0f172a;color:white;font-family:Arial;text-align:center;padding-top:50px">
+<h1>🔐 ULTRA Termux Panel</h1>
 <form method=post>
 <input name=user placeholder=Kullanıcı Adı style="padding:10px"><br><br>
 <input name=pass type=password placeholder=Şifre style="padding:10px"><br><br>
@@ -69,13 +71,12 @@ def login():
 </html>
 """
 
-# =========================
+# --------------------
 # Panel Sayfası
-# =========================
+# --------------------
 @app.route("/panel")
 def panel():
-    if not session.get("login"):
-        return redirect("/")
+    if not session.get("login"): return redirect("/")
     queries = [
         {"name":"Sistem Süresi","cmd":"uptime"},
         {"name":"RAM Kullanımı","cmd":"free -h"},
@@ -88,7 +89,7 @@ def panel():
         {"name":"Kurulu Paketler","cmd":"pkg list-installed"}
     ]
 
-    # Hazır sorgu butonlarını oluştur
+    # Hazır sorgu butonları
     buttons_html = ""
     for q in queries:
         buttons_html += f'<div class="card"><button onclick="run_query(`{q["cmd"].replace("`","\\`")}`)">{q["name"]}</button></div>'
@@ -99,7 +100,7 @@ def panel():
 <head>
 <meta charset=UTF-8>
 <meta name=viewport content="width=device-width, initial-scale=1">
-<title>PRO Termux Panel</title>
+<title>ULTRA Termux Panel</title>
 <style>
 body{{background:#020617;color:white;font-family:Arial;margin:0;padding:20px}}
 h1{{text-align:center}}
@@ -111,7 +112,7 @@ pre{{background:#0f172a;padding:10px;border-radius:5px;max-height:300px;overflow
 </style>
 </head>
 <body>
-<h1>🚀 Termux PRO Panel</h1>
+<h1>🚀 ULTRA Termux Panel</h1>
 
 <div class="grid">
 <div class="card"><h3>CPU</h3><div id="cpu"></div></div>
@@ -120,12 +121,11 @@ pre{{background:#0f172a;padding:10px;border-radius:5px;max-height:300px;overflow
 <div class="card"><h3>IP</h3><div id="ip"></div></div>
 <div class="card"><h3>Battery</h3><div id="battery"></div></div>
 <div class="card"><h3>System</h3><div id="system"></div></div>
+<div class="card"><h3>Location</h3><div id="location"></div></div>
 </div>
 
 <h2>⚡ Hazır Sorgular</h2>
-<div class="grid">
-{buttons_html}
-</div>
+<div class="grid">{buttons_html}</div>
 
 <h2>🖥 Terminal</h2>
 <input id=cmd placeholder="Komut yaz"><button onclick=run_cmd()>Çalıştır</button>
@@ -140,6 +140,7 @@ document.getElementById('disk').innerText=d.Disk+'%'
 document.getElementById('ip').innerText=d.IP
 document.getElementById('system').innerText=d.System
 document.getElementById('battery').innerText=d.Battery
+document.getElementById('location').innerText=d.Location.join(", ")
 }})}}
 setInterval(update,2000)
 update()
@@ -161,24 +162,22 @@ fetch("/cmd",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:
 """
     return html
 
-# =========================
+# --------------------
 # API ve Terminal
-# =========================
+# --------------------
 @app.route("/api")
 def api():
-    if not session.get("login"):
-        return {}
+    if not session.get("login"): return {}
     return jsonify(sysinfo())
 
 @app.route("/cmd",methods=["POST"])
 def cmd():
-    if not session.get("login"):
-        return ""
+    if not session.get("login"): return ""
     c = request.json.get("cmd")
     return run(c)
 
-# =========================
+# --------------------
 # Çalıştır
-# =========================
+# --------------------
 if __name__=="__main__":
     app.run(host="0.0.0.0", port=5000)
