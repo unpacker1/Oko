@@ -6,10 +6,28 @@ import psutil
 import socket
 import platform
 import subprocess
+import json
 from datetime import datetime
 from flask import Flask, render_template_string
 
 app = Flask(__name__)
+
+
+def run_cmd(cmd):
+    try:
+        out = subprocess.check_output(cmd, shell=True, text=True)
+        return out.strip()
+    except:
+        return "N/A"
+
+
+def run_json(cmd):
+    try:
+        out = subprocess.check_output(cmd, shell=True, text=True)
+        return json.loads(out)
+    except:
+        return "N/A"
+
 
 def get_ip():
     try:
@@ -21,11 +39,53 @@ def get_ip():
     except:
         return "Bilinmiyor"
 
-def run_cmd(cmd):
+
+def get_cpu():
     try:
-        return subprocess.check_output(cmd,shell=True,text=True).strip()
+        return {
+            "Kullanım %": psutil.cpu_percent(interval=1),
+            "Çekirdek": psutil.cpu_count()
+        }
     except:
-        return "N/A"
+        return {"Durum":"CPU bilgisi alınamadı"}
+
+
+def get_ram():
+    try:
+        ram = psutil.virtual_memory()
+        return {
+            "Toplam": f"{ram.total//(1024**3)} GB",
+            "Kullanılan": f"{ram.used//(1024**3)} GB",
+            "Yüzde": ram.percent
+        }
+    except:
+        return {"Durum":"RAM bilgisi alınamadı"}
+
+
+def get_disk():
+    try:
+        disk = psutil.disk_usage("/")
+        return {
+            "Toplam": f"{disk.total//(1024**3)} GB",
+            "Kullanılan": f"{disk.used//(1024**3)} GB",
+            "Yüzde": disk.percent
+        }
+    except:
+        return {"Durum":"Disk bilgisi alınamadı"}
+
+
+def get_battery():
+    try:
+        b = psutil.sensors_battery()
+        if b:
+            return {
+                "Seviye": f"%{b.percent}",
+                "Şarj": b.power_plugged
+            }
+    except:
+        pass
+    return {"Durum":"Batarya bilgisi yok"}
+
 
 def collect():
 
@@ -33,40 +93,23 @@ def collect():
 
     data["Cihaz"] = {
         "Sistem": platform.system(),
-        "Node": platform.node(),
         "Release": platform.release(),
         "Makine": platform.machine(),
         "IP": get_ip()
     }
 
-    data["CPU"] = {
-        "Kullanım %": psutil.cpu_percent(interval=1),
-        "Çekirdek": psutil.cpu_count()
-    }
+    data["CPU"] = get_cpu()
+    data["RAM"] = get_ram()
+    data["Depolama"] = get_disk()
+    data["Batarya"] = get_battery()
 
-    ram = psutil.virtual_memory()
-    data["RAM"] = {
-        "Toplam": f"{ram.total//(1024**3)} GB",
-        "Kullanılan": f"{ram.used//(1024**3)} GB",
-        "Yüzde": ram.percent
-    }
+    wifi = run_json("termux-wifi-connectioninfo")
 
-    disk = psutil.disk_usage("/")
-    data["Depolama"] = {
-        "Toplam": f"{disk.total//(1024**3)} GB",
-        "Kullanılan": f"{disk.used//(1024**3)} GB",
-        "Yüzde": disk.percent
-    }
-
-    battery = psutil.sensors_battery()
-    if battery:
-        data["Batarya"] = {
-            "Seviye": f"%{battery.percent}",
-            "Şarj": battery.power_plugged
-        }
-
-    wifi = run_cmd("termux-wifi-connectioninfo")
     data["WiFi"] = wifi
+
+    data["Network"] = {
+        "Hostname": socket.gethostname()
+    }
 
     return data
 
@@ -78,6 +121,7 @@ HTML = """
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="20">
+
 <title>Ultra Termux Panel</title>
 
 <style>
@@ -103,16 +147,16 @@ gap:20px;
 
 .card{
 background:#1e293b;
-border-radius:10px;
-padding:15px;
-box-shadow:0 0 10px rgba(0,0,0,0.4);
+border-radius:12px;
+padding:16px;
+box-shadow:0 0 12px rgba(0,0,0,0.5);
 }
 
 .card h2{
-margin-top:0;
+margin:0 0 10px 0;
 font-size:18px;
 border-bottom:1px solid #334155;
-padding-bottom:5px;
+padding-bottom:6px;
 }
 
 pre{
@@ -159,6 +203,7 @@ Son güncelleme: {{time}}
 </html>
 """
 
+
 @app.route("/")
 def index():
 
@@ -166,6 +211,7 @@ def index():
     now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
     return render_template_string(HTML,data=data,time=now)
+
 
 if __name__ == "__main__":
 
