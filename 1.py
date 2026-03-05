@@ -4,8 +4,7 @@
 import subprocess
 import json
 from flask import Flask, render_template_string
-import threading
-import time
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -49,7 +48,7 @@ def collect_all_data():
     sensor_data = termux_command("termux-sensor -l")
     sensors_list = []
     if isinstance(sensor_data, list):
-        sensors_list = sensor_data[:5]  # çok fazla sensör varsa ilk 5
+        sensors_list = sensor_data[:5]
     elif isinstance(sensor_data, dict) and "hata" not in sensor_data:
         sensors_list = list(sensor_data.keys())[:5]
     data['sensörler'] = {}
@@ -80,7 +79,7 @@ def collect_all_data():
     else:
         data['çağrılar'] = {"bilgi": "Çağrı kaydı alınamadı"}
 
-    # Depolama bilgisi (termux-storage-get ile belirli dosyalar listelenebilir, burada basit bir kontrol)
+    # Depolama bilgisi
     storage = termux_command("termux-storage-list")
     data['depolama'] = storage
 
@@ -89,7 +88,7 @@ def collect_all_data():
 
     return data
 
-# HTML şablonu (modern ve mobil uyumlu)
+# HTML şablonu (ensure_ascii kaldırıldı)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -97,7 +96,7 @@ HTML_TEMPLATE = """
     <title>📱 Termux Telefon Paneli</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="30"> <!-- 30 saniyede bir otomatik yenile -->
+    <meta http-equiv="refresh" content="30">
     <style>
         * { box-sizing: border-box; }
         body {
@@ -181,10 +180,10 @@ HTML_TEMPLATE = """
                     {% if veri.get('hata') %}
                         <pre class="error">{{ veri.hata }}</pre>
                     {% else %}
-                        <pre>{{ veri | tojson(indent=2, ensure_ascii=False) }}</pre>
+                        <pre>{{ veri | tojson(indent=2) }}</pre>
                     {% endif %}
                 {% elif veri is iterable and veri is not string %}
-                    <pre>{{ veri | tojson(indent=2, ensure_ascii=False) }}</pre>
+                    <pre>{{ veri | tojson(indent=2) }}</pre>
                 {% else %}
                     <pre>{{ veri }}</pre>
                 {% endif %}
@@ -201,11 +200,9 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    from datetime import datetime
     veriler = collect_all_data()
     zaman = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     return render_template_string(HTML_TEMPLATE, data=veriler, zaman=zaman)
 
 if __name__ == '__main__':
-    # Flask'ı tüm arayüzlerde çalıştır (aynı ağdaki cihazlar erişebilir)
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
