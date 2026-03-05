@@ -4,215 +4,233 @@
 import os
 import psutil
 import socket
-import platform
 import subprocess
-import json
-from datetime import datetime
-from flask import Flask, render_template_string
+import platform
+from flask import Flask, request, redirect, session, jsonify
 
 app = Flask(__name__)
+app.secret_key = "termux-secret"
 
 
-def run_cmd(cmd):
+USER="admin"
+PASS="termux123"
+
+
+def run(cmd):
     try:
-        out = subprocess.check_output(cmd, shell=True, text=True)
-        return out.strip()
+        return subprocess.check_output(cmd,shell=True,text=True).strip()
     except:
         return "N/A"
 
 
-def run_json(cmd):
+def sysinfo():
+
+    data={}
+
     try:
-        out = subprocess.check_output(cmd, shell=True, text=True)
-        return json.loads(out)
+        cpu=psutil.cpu_percent(interval=1)
     except:
-        return "N/A"
+        cpu="N/A"
 
-
-def get_ip():
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8",80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
+        ram=psutil.virtual_memory().percent
     except:
-        return "Bilinmiyor"
+        ram="N/A"
 
-
-def get_cpu():
     try:
-        return {
-            "Kullanım %": psutil.cpu_percent(interval=1),
-            "Çekirdek": psutil.cpu_count()
-        }
+        disk=psutil.disk_usage("/").percent
     except:
-        return {"Durum":"CPU bilgisi alınamadı"}
+        disk="N/A"
 
-
-def get_ram():
-    try:
-        ram = psutil.virtual_memory()
-        return {
-            "Toplam": f"{ram.total//(1024**3)} GB",
-            "Kullanılan": f"{ram.used//(1024**3)} GB",
-            "Yüzde": ram.percent
-        }
-    except:
-        return {"Durum":"RAM bilgisi alınamadı"}
-
-
-def get_disk():
-    try:
-        disk = psutil.disk_usage("/")
-        return {
-            "Toplam": f"{disk.total//(1024**3)} GB",
-            "Kullanılan": f"{disk.used//(1024**3)} GB",
-            "Yüzde": disk.percent
-        }
-    except:
-        return {"Durum":"Disk bilgisi alınamadı"}
-
-
-def get_battery():
-    try:
-        b = psutil.sensors_battery()
-        if b:
-            return {
-                "Seviye": f"%{b.percent}",
-                "Şarj": b.power_plugged
-            }
-    except:
-        pass
-    return {"Durum":"Batarya bilgisi yok"}
-
-
-def collect():
-
-    data = {}
-
-    data["Cihaz"] = {
-        "Sistem": platform.system(),
-        "Release": platform.release(),
-        "Makine": platform.machine(),
-        "IP": get_ip()
-    }
-
-    data["CPU"] = get_cpu()
-    data["RAM"] = get_ram()
-    data["Depolama"] = get_disk()
-    data["Batarya"] = get_battery()
-
-    wifi = run_json("termux-wifi-connectioninfo")
-
-    data["WiFi"] = wifi
-
-    data["Network"] = {
-        "Hostname": socket.gethostname()
-    }
+    data["cpu"]=cpu
+    data["ram"]=ram
+    data["disk"]=disk
+    data["ip"]=socket.gethostbyname(socket.gethostname())
+    data["system"]=platform.system()+" "+platform.release()
 
     return data
 
 
-HTML = """
-<!DOCTYPE html>
+@app.route("/",methods=["GET","POST"])
+def login():
+
+    if request.method=="POST":
+
+        u=request.form.get("user")
+        p=request.form.get("pass")
+
+        if u==USER and p==PASS:
+
+            session["login"]=True
+            return redirect("/panel")
+
+    return """
+    <html>
+    <body style="background:#0f172a;color:white;font-family:Arial;text-align:center;padding-top:100px">
+
+    <h1>🔐 Termux PRO Panel</h1>
+
+    <form method=post>
+
+    <input name=user placeholder=User style="padding:10px"><br><br>
+
+    <input name=pass type=password placeholder=Password style="padding:10px"><br><br>
+
+    <button style="padding:10px 30px">Login</button>
+
+    </form>
+
+    </body>
+    </html>
+    """
+
+
+@app.route("/panel")
+def panel():
+
+    if not session.get("login"):
+        return redirect("/")
+
+    return """
 <html>
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="20">
 
-<title>Ultra Termux Panel</title>
+<meta name=viewport content="width=device-width, initial-scale=1">
 
 <style>
 
 body{
-background:#0f172a;
-font-family:Arial;
+background:#020617;
 color:white;
+font-family:Arial;
 margin:0;
 padding:20px;
 }
 
-h1{
-text-align:center;
-margin-bottom:30px;
-}
-
 .grid{
 display:grid;
-grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
 gap:20px;
 }
 
 .card{
 background:#1e293b;
-border-radius:12px;
-padding:16px;
-box-shadow:0 0 12px rgba(0,0,0,0.5);
-}
-
-.card h2{
-margin:0 0 10px 0;
-font-size:18px;
-border-bottom:1px solid #334155;
-padding-bottom:6px;
-}
-
-pre{
-white-space:pre-wrap;
-font-size:13px;
-}
-
-.footer{
+padding:20px;
+border-radius:10px;
 text-align:center;
-margin-top:30px;
-opacity:.7;
+font-size:20px;
+}
+
+button{
+padding:10px 20px;
+margin-top:20px;
+}
+
+input{
+padding:10px;
+width:70%;
 }
 
 </style>
+
 </head>
 
 <body>
 
-<h1>🚀 Ultra Termux Sistem Paneli</h1>
+<h1>🚀 Termux PRO Panel</h1>
 
-<div class="grid">
+<div class=grid>
 
-{% for k,v in data.items() %}
-
-<div class="card">
-
-<h2>{{k}}</h2>
-
-<pre>{{v}}</pre>
+<div class=card id=cpu>CPU</div>
+<div class=card id=ram>RAM</div>
+<div class=card id=disk>DISK</div>
+<div class=card id=ip>IP</div>
 
 </div>
 
-{% endfor %}
+<br><br>
 
-</div>
+<h2>🖥 Terminal</h2>
 
-<div class="footer">
+<input id=cmd placeholder="komut yaz">
 
-Son güncelleme: {{time}}
+<button onclick=run()>Çalıştır</button>
 
-</div>
+<pre id=out></pre>
+
+<script>
+
+function update(){
+
+fetch('/api')
+
+.then(r=>r.json())
+
+.then(d=>{
+
+cpu.innerHTML="CPU "+d.cpu+"%"
+ram.innerHTML="RAM "+d.ram+"%"
+disk.innerHTML="DISK "+d.disk+"%"
+ip.innerHTML="IP "+d.ip
+
+})
+
+}
+
+setInterval(update,2000)
+
+update()
+
+function run(){
+
+c=document.getElementById("cmd").value
+
+fetch("/cmd",{
+
+method:"POST",
+
+headers:{"Content-Type":"application/json"},
+
+body:JSON.stringify({cmd:c})
+
+})
+
+.then(r=>r.text())
+
+.then(t=>{
+
+out.innerText=t
+
+})
+
+}
+
+</script>
 
 </body>
+
 </html>
 """
 
 
-@app.route("/")
-def index():
+@app.route("/api")
+def api():
 
-    data = collect()
-    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    if not session.get("login"):
+        return {}
 
-    return render_template_string(HTML,data=data,time=now)
+    return jsonify(sysinfo())
 
 
-if __name__ == "__main__":
+@app.route("/cmd",methods=["POST"])
+def cmd():
 
-    app.run(host="0.0.0.0",port=5000)
+    if not session.get("login"):
+        return ""
+
+    c=request.json.get("cmd")
+
+    return run(c)
+
+
+app.run(host="0.0.0.0",port=5000)
